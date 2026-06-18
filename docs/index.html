@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>llm-compression: how few bits per weight, losslessly?</title>
+<style>
+  body { font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+         margin: 0; padding: 2rem; background: #f7f7fb; color: #1a1a2e; line-height: 1.55; }
+  .wrap { max-width: 820px; margin: 0 auto; }
+  h1 { font-size: 1.6rem; margin-bottom: .2rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; border-bottom: 1px solid #e3e3ee; padding-bottom: .3rem; }
+  .lede { color: #444; font-size: 1.05rem; }
+  .cards { display: flex; gap: 1rem; flex-wrap: wrap; margin: 1rem 0; }
+  .card { flex: 1 1 220px; background: #fff; border-radius: 10px; padding: 1rem 1.1rem;
+          box-shadow: 0 2px 12px rgba(0,0,0,.07); text-decoration: none; color: inherit; }
+  .card:hover { box-shadow: 0 4px 18px rgba(0,0,0,.13); }
+  .card b { color: #2563eb; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; margin: .5rem 0; }
+  th, td { text-align: right; padding: .35rem .7rem; border-bottom: 1px solid #eee; }
+  th:first-child, td:first-child { text-align: left; }
+  .floor td { font-weight: 600; color: #16a34a; }
+  code { background: #eef; padding: .1em .4em; border-radius: 4px; font-size: .9em; }
+  .bars { margin: .5rem 0; }
+  .bar { display: flex; align-items: center; gap: .6rem; margin: .25rem 0; }
+  .bar .lbl { width: 130px; font-size: .85rem; }
+  .bar .track { flex: 1; background: #e8e8f2; border-radius: 4px; height: 20px; position: relative; }
+  .bar .fill { height: 100%; border-radius: 4px; }
+  .bar .val { width: 90px; font-size: .82rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>How few bits per weight can store an LLM, losslessly?</h1>
+  <p class="lede">From Shannon's source coding theorem to real Qwen2.5-0.5B weights.
+  Short answer: bf16 weights carry about 10.5 bits of entropy per weight,
+  a ~34% lossless reduction, and nearly all the redundancy is in the exponent.</p>
+
+  <div class="cards">
+    <a class="card" href="entropy_curve.html"><b>Entropy curve →</b><br>
+      Shannon's H(p): the bits-per-symbol floor for a biased coin.</a>
+    <a class="card" href="weights_dashboard.html"><b>Weight distributions →</b><br>
+      Per-matrix histograms of a real model, with bf16 entropy per matrix.</a>
+  </div>
+
+  <h2>1. The entropy floor of a quantised Gaussian</h2>
+  <p>Round <code>x ~ N(μ, σ²)</code> to fp16 and you get a discrete source with a
+  computable pmf. Its entropy <code>H ≈ 13.46 bits</code> is the lossless floor, and
+  it's nearly scale-invariant (floating point has relative precision). The
+  16 bits split as sign 1.0 + exponent 2.54 + mantissa 9.97. The
+  redundancy is almost entirely in the exponent.</p>
+
+  <h2>2. Coders that reach it (verified lossless)</h2>
+  <div class="bars" id="bars"></div>
+  <table>
+    <tr><th>Coder</th><th>bits/sample</th><th>overhead vs H</th></tr>
+    <tr><td>naive storage</td><td>16.000</td><td>n/a</td></tr>
+    <tr><td>Huffman</td><td>13.503</td><td>+0.039</td></tr>
+    <tr><td>range (64-bit)</td><td>13.464</td><td>~0</td></tr>
+    <tr><td>rANS</td><td>13.462</td><td>~0</td></tr>
+    <tr class="floor"><td>entropy floor H</td><td>13.464</td><td>n/a</td></tr>
+  </table>
+
+  <h2>3. Real LLM weights match the theory</h2>
+  <p>Qwen2.5-0.5B weights are near-Gaussian (kurtosis ≈ 3.5–4.7). Their bf16 entropy is
+  ~10.5 bits/weight, exactly the fp16 figure minus ~3 bits, because
+  bf16 has 7 mantissa bits instead of fp16's 10. The synthetic theory predicts
+  the real model. Query/key projections are the heavy-tailed exception (kurtosis 14–23,
+  outlier dimensions); RMSNorm gains are bimodal. See the dashboard.</p>
+
+  <h2>4. So why does production go lossy?</h2>
+  <p>Lossless bottoms out at the ~10.5-bit floor. Deployments run at 4–8 bits
+  via int4/int8 quantization, below the floor, by discarding information
+  the model tolerates losing. They also decode faster: a fixed-width quantized weight is
+  a shift-and-mask into a matmul kernel, with random access, versus a sequential entropy
+  decode. The mantissa (least compressible losslessly, least informative)
+  is exactly what low-bit quantization drops first. (Details in the README.)</p>
+</div>
+
+<script>
+const rows = [
+  ["naive storage", 16.000, "#94a3b8"],
+  ["Huffman",       13.503, "#2563eb"],
+  ["range (64-bit)",13.464, "#2563eb"],
+  ["rANS",          13.462, "#2563eb"],
+  ["floor H",       13.464, "#16a34a"],
+];
+const max = 16;
+document.getElementById("bars").innerHTML = rows.map(([l, v, c]) => `
+  <div class="bar">
+    <span class="lbl">${l}</span>
+    <span class="track"><span class="fill" style="width:${(v/max*100).toFixed(1)}%;background:${c}"></span></span>
+    <span class="val">${v.toFixed(3)} bits</span>
+  </div>`).join("");
+</script>
+</body>
+</html>

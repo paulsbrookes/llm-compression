@@ -1,0 +1,12 @@
+# build artifacts
+bin/
+*.o
+
+# model weights (regenerate with scripts/download_model.sh)
+*.safetensors
+
+# generated data (regenerate with scripts/*.sh)
+data/*.csv
+data/*.json
+docs/weights.json
+!data/.gitkeep

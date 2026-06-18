@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Qwen weight distributions</title>
+<style>
+  body { font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+         margin: 0; padding: 1.5rem 2rem; background: #f7f7fb; color: #1a1a2e; }
+  h1 { font-size: 1.3rem; }
+  p.intro { color: #555; max-width: 760px; line-height: 1.5; }
+  .controls { margin: 1rem 0; }
+  label { font-size: .9rem; margin-right: 1rem; cursor: pointer; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 1.25rem; }
+  .card { background: #fff; border-radius: 10px; box-shadow: 0 2px 12px rgba(0,0,0,.07); padding: 1rem 1.1rem; }
+  .card h2 { font-size: .95rem; margin: 0 0 .25rem; word-break: break-all; }
+  .meta { font-size: .8rem; color: #666; font-variant-numeric: tabular-nums; line-height: 1.55; }
+  .meta b { color: #1a1a2e; }
+  .pill { display: inline-block; background: #eef; border-radius: 5px; padding: .05em .45em; margin-right: .3em; }
+  .save { color: #16a34a; font-weight: 600; }
+  canvas { width: 100%; height: 200px; margin-top: .5rem; }
+  #status { color: #b91c1c; }
+</style>
+</head>
+<body>
+  <h1>LLM weight distributions &mdash; Qwen2.5-0.5B</h1>
+  <p class="intro">
+    Each panel is the histogram of one weight matrix (blue), with a Gaussian of the same mean/std
+    overlaid (red dashed) for comparison. <b>bf16 entropy</b> is the empirical entropy of the
+    matrix&rsquo;s bf16 bit-patterns &mdash; i.e. the bits/weight a codec like our Huffman/range coder
+    would achieve, vs. the naive 16. <b>Kurtosis</b> &gt; 3 means heavier tails than a Gaussian.
+  </p>
+  <div class="controls">
+    <label><input type="checkbox" id="logy"> log&nbsp;y-axis (reveals tails)</label>
+    <label><input type="checkbox" id="gauss" checked> Gaussian overlay</label>
+  </div>
+  <div id="status">Loading weights.json &hellip; (serve this folder: <code>python3 -m http.server</code>)</div>
+  <div class="grid" id="grid"></div>
+
+<script>
+const C = { curve: "#2563eb", fill: "rgba(37,99,235,.18)", gauss: "#e11d48", axis: "#bbb" };
+let DATA = null;
+
+function draw(canvas, t) {
+  const logy = document.getElementById("logy").checked;
+  const showG = document.getElementById("gauss").checked;
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  const ctx = canvas.getContext("2d"); ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
+
+  const bins = t.hist.bins, B = bins.length;
+  const lo = t.hist.lo, hi = t.hist.hi, span = hi - lo;
+  const pad = { l: 8, r: 8, t: 8, b: 18 };
+  const pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
+  const val = c => logy ? Math.log10(1 + c) : c;
+  const maxV = Math.max(...bins.map(val), 1e-9);
+  const x = i => pad.l + (i / B) * pw;
+  const y = c => pad.t + ph * (1 - val(c) / maxV);
+
+  // histogram area
+  ctx.beginPath(); ctx.moveTo(x(0), pad.t + ph);
+  for (let i = 0; i < B; i++) { ctx.lineTo(x(i), y(bins[i])); ctx.lineTo(x(i + 1), y(bins[i])); }
+  ctx.lineTo(x(B), pad.t + ph); ctx.closePath();
+  ctx.fillStyle = C.fill; ctx.fill();
+  ctx.strokeStyle = C.curve; ctx.lineWidth = 1.2; ctx.stroke();
+
+  // Gaussian overlay (same mean/std), scaled so its peak matches data area scale
+  if (showG && t.std > 0) {
+    const binW = span / B;
+    const N = t.count;
+    const g = v => N * binW / (t.std * Math.sqrt(2 * Math.PI)) * Math.exp(-0.5 * ((v - t.mean) / t.std) ** 2);
+    ctx.beginPath();
+    for (let i = 0; i <= B; i++) { const v = lo + (i / B) * span; const yy = y(g(v)); i ? ctx.lineTo(x(i), yy) : ctx.moveTo(x(i), yy); }
+    ctx.strokeStyle = C.gauss; ctx.lineWidth = 1.4; ctx.setLineDash([4, 3]); ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  // baseline + x labels
+  ctx.strokeStyle = C.axis; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(pad.l, pad.t + ph); ctx.lineTo(pad.l + pw, pad.t + ph); ctx.stroke();
+  ctx.fillStyle = "#666"; ctx.font = "10px system-ui"; ctx.textAlign = "center";
+  ctx.fillText(lo.toExponential(2), pad.l, H - 5);
+  ctx.fillText("0", pad.l + pw * (-lo / span), H - 5);
+  ctx.fillText(hi.toExponential(2), pad.l + pw, H - 5);
+}
+
+function render() {
+  const grid = document.getElementById("grid");
+  grid.innerHTML = "";
+  for (const t of DATA.tensors) {
+    const card = document.createElement("div"); card.className = "card";
+    const save = (16 - t.bf16_entropy_bits);
+    card.innerHTML = `
+      <h2>${t.name}</h2>
+      <div class="meta">
+        <span class="pill">${t.dtype}</span><span class="pill">[${t.shape.join("×")}]</span>
+        n=${t.count.toLocaleString()}<br>
+        mean=<b>${t.mean.toExponential(2)}</b> &nbsp; std=<b>${t.std.toExponential(2)}</b>
+        &nbsp; range=[${t.min.toExponential(2)}, ${t.max.toExponential(2)}]<br>
+        kurtosis=<b>${t.kurtosis.toFixed(2)}</b> (Gaussian=3.00) &nbsp;
+        bf16 entropy=<b>${t.bf16_entropy_bits.toFixed(3)} bits</b>
+        <span class="save">(&minus;${save.toFixed(2)} vs 16)</span>
+      </div>
+      <canvas></canvas>`;
+    grid.appendChild(card);
+    draw(card.querySelector("canvas"), t);
+  }
+}
+
+document.getElementById("logy").addEventListener("change", render);
+document.getElementById("gauss").addEventListener("change", render);
+window.addEventListener("resize", render);
+
+fetch("weights.json")
+  .then(r => r.json())
+  .then(d => { DATA = d; document.getElementById("status").textContent = ""; render(); })
+  .catch(e => { document.getElementById("status").textContent =
+     "Could not load weights.json — run `python3 -m http.server` in this folder and open via http://localhost:8000/weights_dashboard.html"; });
+</script>
+</body>
+</html>

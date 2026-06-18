@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Binary Entropy Function</title>
+<style>
+  :root { --fg: #1a1a2e; --grid: #d9d9e3; --axis: #555; --curve: #2563eb; --accent: #e11d48; }
+  body {
+    font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+    margin: 0; padding: 2rem; background: #f7f7fb; color: var(--fg);
+    display: flex; flex-direction: column; align-items: center;
+  }
+  h1 { font-size: 1.3rem; font-weight: 600; }
+  p.caption { max-width: 620px; text-align: center; color: #555; line-height: 1.5; }
+  .stage { position: relative; }
+  canvas { background: #fff; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,.08); cursor: crosshair; }
+  #readout {
+    font-variant-numeric: tabular-nums; font-size: 1rem; margin-top: .75rem;
+    min-height: 1.4em; color: var(--accent); font-weight: 600;
+  }
+  code { background: #eee; padding: .1em .4em; border-radius: 4px; }
+</style>
+</head>
+<body>
+  <h1>Binary Entropy Function &nbsp;H(p)</h1>
+  <p class="caption">
+    H(p) = &minus;p&middot;log<sub>2</sub>(p) &minus; (1&minus;p)&middot;log<sub>2</sub>(1&minus;p).
+    This is the entropy (in bits) of a single coin flip with bias p &mdash; the minimum
+    average bits per symbol needed to encode such a source, per Shannon&rsquo;s source coding theorem.
+    Move your mouse over the curve.
+  </p>
+  <div class="stage">
+    <canvas id="plot" width="640" height="480"></canvas>
+  </div>
+  <div id="readout">p = 0.500 &nbsp;&rarr;&nbsp; H = 1.000 bits (maximum)</div>
+
+<script>
+const canvas = document.getElementById("plot");
+const ctx = canvas.getContext("2d");
+const readout = document.getElementById("readout");
+
+const W = canvas.width, H = canvas.height;
+const M = { left: 60, right: 30, top: 30, bottom: 55 }; // margins
+const plotW = W - M.left - M.right;
+const plotH = H - M.top - M.bottom;
+
+// Binary entropy in bits. H(0) = H(1) = 0 by convention.
+function entropy(p) {
+  if (p <= 0 || p >= 1) return 0;
+  return -p * Math.log2(p) - (1 - p) * Math.log2(1 - p);
+}
+
+// Data -> pixel coordinate transforms. x in [0,1], y in [0,1] (max entropy = 1 bit).
+const px = x => M.left + x * plotW;
+const py = y => M.top + (1 - y) * plotH;
+
+function drawAxes() {
+  ctx.strokeStyle = "#d9d9e3";
+  ctx.fillStyle = "#555";
+  ctx.lineWidth = 1;
+  ctx.font = "12px system-ui, sans-serif";
+
+  // gridlines + labels
+  ctx.textAlign = "center";
+  for (let i = 0; i <= 10; i++) {
+    const x = i / 10;
+    ctx.beginPath(); ctx.moveTo(px(x), py(0)); ctx.lineTo(px(x), py(1)); ctx.stroke();
+    ctx.fillText(x.toFixed(1), px(x), py(0) + 18);
+  }
+  ctx.textAlign = "right";
+  for (let i = 0; i <= 10; i++) {
+    const y = i / 10;
+    ctx.beginPath(); ctx.moveTo(px(0), py(y)); ctx.lineTo(px(1), py(y)); ctx.stroke();
+    ctx.fillText(y.toFixed(1), px(0) - 8, py(y) + 4);
+  }
+
+  // axis lines
+  ctx.strokeStyle = "#555"; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(px(0), py(0)); ctx.lineTo(px(1), py(0)); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(px(0), py(0)); ctx.lineTo(px(0), py(1)); ctx.stroke();
+
+  // axis titles
+  ctx.fillStyle = "#1a1a2e"; ctx.font = "13px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("p  (probability of symbol)", M.left + plotW / 2, H - 12);
+  ctx.save();
+  ctx.translate(16, M.top + plotH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText("H(p)  (bits)", 0, 0);
+  ctx.restore();
+}
+
+function drawCurve() {
+  ctx.strokeStyle = "#2563eb"; ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  const N = 600;
+  for (let i = 0; i <= N; i++) {
+    const p = i / N;
+    const x = px(p), y = py(entropy(p));
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function drawMarker(p) {
+  const h = entropy(p);
+  // guide lines
+  ctx.strokeStyle = "rgba(225,29,72,.35)"; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+  ctx.beginPath(); ctx.moveTo(px(p), py(0)); ctx.lineTo(px(p), py(h)); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(px(0), py(h)); ctx.lineTo(px(p), py(h)); ctx.stroke();
+  ctx.setLineDash([]);
+  // dot
+  ctx.fillStyle = "#e11d48";
+  ctx.beginPath(); ctx.arc(px(p), py(h), 5, 0, 2 * Math.PI); ctx.fill();
+}
+
+function render(p) {
+  ctx.clearRect(0, 0, W, H);
+  drawAxes();
+  drawCurve();
+  if (p !== null) drawMarker(p);
+}
+
+render(0.5);
+
+canvas.addEventListener("mousemove", e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  let p = (mx - M.left) / plotW;
+  p = Math.max(0, Math.min(1, p));
+  render(p);
+  const h = entropy(p);
+  const tag = Math.abs(p - 0.5) < 1e-6 ? " (maximum)" : (p === 0 || p === 1 ? " (no uncertainty)" : "");
+  readout.textContent = `p = ${p.toFixed(3)}  →  H = ${h.toFixed(3)} bits${tag}`;
+});
+
+canvas.addEventListener("mouseleave", () => { render(0.5);
+  readout.textContent = "p = 0.500  →  H = 1.000 bits (maximum)"; });
+</script>
+</body>
+</html>
